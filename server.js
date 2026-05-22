@@ -33,7 +33,9 @@ const app = express();
 // Middlewares
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors({ origin: "http://localhost:5173", credentials: true }));
+app.use(
+  cors({ origin: "https://demo-frontend-gilt.vercel.app/", credentials: true })
+);
 
 // Serve static images
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
