@@ -34,7 +34,7 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 app.use(
-  cors({ origin: "https://demo-frontend-gilt.vercel.app", credentials: true })
+  cors({ origin: "https://demo-ecom-blacknovatech.netlify.app", credentials: true })
 );
 
 // Serve static images
