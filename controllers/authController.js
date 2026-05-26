@@ -125,7 +125,8 @@ exports.login = async (req, res) => {
     // Set cookie for the middleware to read
     res.cookie("token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: true, // MUST BE TRUE FOR CROSS-DOMAIN
+      sameSite: "none", // STRICTLY REQUIRED FOR CROSS-DOMAIN
       maxAge: 24 * 60 * 60 * 1000,
     });
 
