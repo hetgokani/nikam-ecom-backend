@@ -12,7 +12,7 @@ const userRoutes = require("./routes/userRoutes");
 const roleRoutes = require("./routes/roleroutes");
 const productRoutes = require("./routes/productRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
-const contactRoutes = require("./routes/contactroutes");
+const contactroutes = require("./routes/contactroutes");
 const faqRoutes = require("./routes/faqroutes");
 const emailSettingRoutes = require("./routes/emailSettingRoutes");
 // NEW ROUTES
@@ -52,7 +52,7 @@ app.use("/api/stock", stockRoutes);
 app.use("/api/gst", gstRoutes);
 app.use("/api/tags", tagRoutes); // NEW TAG ROUTE REGISTERED
 app.use("/api/reviews", reviewRoutes);
-app.use("/api/contact", contactRoutes);
+app.use("/api/contact", contactroutes);
 app.use("/api/faq", faqRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/cart", cartRoutes);
