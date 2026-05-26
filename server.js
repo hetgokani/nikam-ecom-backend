@@ -14,7 +14,7 @@ const productRoutes = require("./routes/productRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
 const contactRoutes = require("./routes/contactroutes");
 const faqRoutes = require("./routes/faqroutes");
-
+const emailSettingRoutes = require("./routes/emailSettingRoutes");
 // NEW ROUTES
 const attributeRoutes = require("./routes/attributeRoutes");
 const brandRoutes = require("./routes/brandRoutes");
@@ -28,14 +28,13 @@ const couponRoutes = require("./routes/couponRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const shippingRoutes = require("./routes/shippingRoutes");
 const chatRoutes = require("./routes/chatRoutes");
+const paymentSettingRoutes = require("./routes/paymentSettingRoutes");
 const app = express();
 
 // Middlewares
 app.use(express.json());
 app.use(cookieParser());
-app.use(
-  cors({ origin: "https://demo-ecom-blacknovatech.netlify.app", credentials: true })
-);
+app.use(cors({ origin: "http://localhost:5173", credentials: true }));
 
 // Serve static images
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -61,6 +60,17 @@ app.use("/api/coupons", couponRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/shipping", shippingRoutes);
 app.use("/api/chats", chatRoutes);
+app.use("/api/settings/email", emailSettingRoutes);
+app.use("/api/settings/payment", paymentSettingRoutes);
+
+// --- HEALTH CHECK API ---
+app.get("/health", (req, res) => {
+  console.log("Health check API hit by frontend loader");
+  res.status(200).json({
+    status: "success",
+    message: "Server is checking and running perfectly!",
+  });
+});
 // Database
 mongoose
   .connect(process.env.MONGO_URI)

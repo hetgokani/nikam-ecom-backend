@@ -22,7 +22,11 @@ module.exports = async (req, res, next) => {
     }
     next();
   } catch (error) {
-    // If token is invalid, just proceed as a Guest
-    next();
+    // 🛡️ THE FIX: If the token is expired or tampered with, DO NOT proceed as a guest.
+    // Return 401. This perfectly triggers your AuthContext interceptor to log the user out.
+    res.clearCookie("token"); // Clears the dead token from cookies
+    return res
+      .status(401)
+      .json({ message: "Session expired. Please log in again." });
   }
 };

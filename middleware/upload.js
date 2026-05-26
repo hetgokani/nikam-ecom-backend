@@ -1,23 +1,32 @@
 const multer = require("multer");
-const fs = require("fs");
-const path = require("path");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const cloudinary = require("cloudinary").v2;
+require("dotenv").config();
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    // Set exact path to uploads/product
-    const dir = path.join(__dirname, "../uploads/product");
+// Configure Cloudinary with your credentials from .env
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-    // Auto-create folder if it doesn't exist
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+// Setup Cloudinary Storage for Multer
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    const ext = file.originalname.split(".").pop().toLowerCase();
+    // Keep excel files working by treating them as raw files
+    if (["xls", "xlsx", "csv"].includes(ext)) {
+      return { folder: "product_excel", resource_type: "raw" };
     }
-    cb(null, dir);
-  },
-  filename: function (req, file, cb) {
-    // Clean filename and add timestamp to avoid duplicates
-    cb(null, Date.now() + "-" + file.originalname.replace(/\s+/g, "-"));
+    // Handle all images
+    return {
+      folder: "product",
+      allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
+    };
   },
 });
 
 const upload = multer({ storage: storage });
+
 module.exports = upload;

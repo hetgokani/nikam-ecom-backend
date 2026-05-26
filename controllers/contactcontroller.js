@@ -30,3 +30,13 @@ exports.deleteMessage = async (req, res) => {
     res.status(500).json({ error: "Delete failed" });
   }
 };
+// At the bottom of contactController.js
+exports.getNewContactCount = async (req, res) => {
+  try {
+    // Make sure 'Contact' model is imported at the top of this file
+    const count = await Contact.countDocuments({ isRead: false });
+    res.status(200).json({ count });
+  } catch (error) {
+    res.status(500).json({ message: "Error counting contacts" });
+  }
+};

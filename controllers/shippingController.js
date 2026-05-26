@@ -14,13 +14,12 @@ exports.getAllShipping = async (req, res) => {
 // @desc    Add or Update Shipping (Manual Entry)
 exports.upsertShipping = async (req, res) => {
   try {
-    const { city, pincode, shippingPrice, deliveryDuration, isAvailable } =
-      req.body;
+    const { city, shippingPrice, deliveryDuration, isAvailable } = req.body;
 
-    // Use findOneAndUpdate with upsert to create or update based on pincode
+    // REMOVED: pincode field from criteria and updates
     const shipping = await Shipping.findOneAndUpdate(
-      { pincode },
-      { city, shippingPrice, deliveryDuration, isAvailable },
+      { city },
+      { shippingPrice, deliveryDuration, isAvailable },
       { new: true, upsert: true }
     );
     res
@@ -62,12 +61,11 @@ exports.importShipping = async (req, res) => {
       return res.status(400).json({ message: "The uploaded file is empty" });
     }
 
-    // Map excel columns to database fields
+    // REMOVED: PIN Code mapping from the sheet object payload
     const bulkOps = data.map((item) => ({
       updateOne: {
-        filter: { pincode: String(item["PIN Code"]) },
+        filter: { city: item["City Name"] || "Unknown" },
         update: {
-          city: item["City Name"] || "Unknown",
           shippingPrice: Number(item["Shipping Price (₹)"]) || 0,
           deliveryDuration: item["Delivery Duration"] || "3-5 Days",
           isAvailable: item["Available"] !== "No", // Defaults to true unless explicitly "No"
@@ -91,9 +89,9 @@ exports.exportShipping = async (req, res) => {
   try {
     const data = await Shipping.find().sort({ city: 1 });
 
+    // REMOVED: "PIN Code" key allocation from formatting layout
     const formattedData = data.map((s) => ({
       "City Name": s.city,
-      "PIN Code": s.pincode,
       "Shipping Price (₹)": s.shippingPrice,
       "Delivery Duration": s.deliveryDuration,
       Available: s.isAvailable ? "Yes" : "No",

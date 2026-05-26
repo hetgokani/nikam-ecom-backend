@@ -1,9 +1,10 @@
 const Product = require("../models/Product");
 const Variant = require("../models/Variant");
-const Setting = require("../models/Setting"); // <-- IMPORTANT
+const Setting = require("../models/Setting");
 const fs = require("fs");
 const path = require("path");
 const XLSX = require("xlsx");
+const cloudinary = require("cloudinary").v2; // ADDED CLOUDINARY
 
 exports.createProduct = async (req, res) => {
   try {
@@ -22,10 +23,9 @@ exports.createProduct = async (req, res) => {
 
     if (req.files) {
       req.files.forEach((file) => {
-        if (file.fieldname === "thumbnail")
-          thumbnailPath = `/uploads/product/${file.filename}`;
-        if (file.fieldname === "gallery")
-          galleryPaths.push(`/uploads/product/${file.filename}`);
+        // CLOUDINARY FIX: file.path contains the secure Cloudinary URL
+        if (file.fieldname === "thumbnail") thumbnailPath = file.path;
+        if (file.fieldname === "gallery") galleryPaths.push(file.path);
       });
     }
 
@@ -46,8 +46,9 @@ exports.createProduct = async (req, res) => {
       const variantImages = [];
       if (req.files) {
         req.files.forEach((file) => {
+          // CLOUDINARY FIX: file.path contains the secure Cloudinary URL
           if (file.fieldname.startsWith(`image_${vIdx}_`))
-            variantImages.push(`/uploads/product/${file.filename}`);
+            variantImages.push(file.path);
         });
       }
 
@@ -75,9 +76,6 @@ exports.createProduct = async (req, res) => {
   }
 };
 
-// ---------------------------------------------------------
-// GET ALL PRODUCTS WITH UNIVERSAL GST LOGIC
-// ---------------------------------------------------------
 exports.getProducts = async (req, res) => {
   try {
     const products = await Product.find()
@@ -86,43 +84,12 @@ exports.getProducts = async (req, res) => {
       .populate("productAttributes.attribute")
       .populate("variants");
 
-    const taxSetting = await Setting.findOne({ key: "tax_rule" });
-    const isUniversalInclusive = taxSetting
-      ? taxSetting.value === "Inclusive"
-      : false;
-
-    const formattedProducts = products.map((product) => {
-      const prodObj = JSON.parse(JSON.stringify(product));
-
-      if (prodObj.variants && prodObj.variants.length > 0) {
-        prodObj.variants.forEach((v) => {
-          if (isUniversalInclusive) {
-            const totalTax = (Number(v.sgst) || 0) + (Number(v.cgst) || 0);
-            if (totalTax > 0) {
-              const multiplier = 1 + totalTax / 100;
-              v.basePriceWithoutTax = v.price;
-              v.price = Math.round(v.price * multiplier);
-
-              if (v.discountPrice) {
-                v.baseDiscountWithoutTax = v.discountPrice;
-                v.discountPrice = Math.round(v.discountPrice * multiplier);
-              }
-            }
-          }
-        });
-      }
-      return prodObj;
-    });
-
-    res.status(200).json(formattedProducts);
+    res.status(200).json(products);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-// ---------------------------------------------------------
-// GET SINGLE PRODUCT WITH UNIVERSAL GST LOGIC
-// ---------------------------------------------------------
 exports.getProductById = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
@@ -133,32 +100,7 @@ exports.getProductById = async (req, res) => {
 
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    const taxSetting = await Setting.findOne({ key: "tax_rule" });
-    const isUniversalInclusive = taxSetting
-      ? taxSetting.value === "Inclusive"
-      : false;
-
-    const prodObj = JSON.parse(JSON.stringify(product));
-
-    if (prodObj.variants && prodObj.variants.length > 0) {
-      prodObj.variants.forEach((v) => {
-        if (isUniversalInclusive) {
-          const totalTax = (Number(v.sgst) || 0) + (Number(v.cgst) || 0);
-          if (totalTax > 0) {
-            const multiplier = 1 + totalTax / 100;
-            v.basePriceWithoutTax = v.price;
-            v.price = Math.round(v.price * multiplier);
-
-            if (v.discountPrice) {
-              v.baseDiscountWithoutTax = v.discountPrice;
-              v.discountPrice = Math.round(v.discountPrice * multiplier);
-            }
-          }
-        }
-      });
-    }
-
-    res.status(200).json({ product: prodObj, variants: prodObj.variants });
+    res.status(200).json({ product: product, variants: product.variants });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -180,15 +122,15 @@ exports.updateProduct = async (req, res) => {
 
     if (req.files) {
       req.files.forEach((file) => {
-        if (file.fieldname === "thumbnail")
-          updateData.thumbnail = `/uploads/product/${file.filename}`;
+        // CLOUDINARY FIX: Use file.path
+        if (file.fieldname === "thumbnail") updateData.thumbnail = file.path;
       });
     }
 
     const updatedProduct = await Product.findByIdAndUpdate(
       req.params.id,
       updateData,
-      { new: true }
+      { new: true },
     );
 
     if (req.body.variants) {
@@ -199,8 +141,9 @@ exports.updateProduct = async (req, res) => {
         const variantImages = v.existingImages || [];
         if (req.files) {
           req.files.forEach((file) => {
+            // CLOUDINARY FIX: Use file.path
             if (file.fieldname.startsWith(`image_${vIdx}_`))
-              variantImages.push(`/uploads/product/${file.filename}`);
+              variantImages.push(file.path);
           });
         }
         return {
@@ -242,12 +185,28 @@ exports.deleteProduct = async (req, res) => {
     });
 
     imagesToDelete = imagesToDelete.filter(
-      (img) => img && typeof img === "string" && img.trim() !== ""
+      (img) => img && typeof img === "string" && img.trim() !== "",
     );
-    imagesToDelete.forEach((imgPath) => {
-      const fullPath = path.join(__dirname, "..", imgPath);
-      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
-    });
+
+    // CLOUDINARY FIX: Delete from Cloudinary instead of local FS
+    for (const imgUrl of imagesToDelete) {
+      try {
+        if (imgUrl.includes("cloudinary.com")) {
+          // Extract public_id (folder/filename) from the URL
+          const parts = imgUrl.split("/");
+          const filename = parts.pop().split(".")[0];
+          const folder = parts.pop();
+          const public_id = `${folder}/${filename}`;
+          await cloudinary.uploader.destroy(public_id);
+        } else {
+          // Fallback just in case you have old local images still in the DB
+          const fullPath = path.join(__dirname, "..", imgUrl);
+          if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+        }
+      } catch (err) {
+        console.error("Cloudinary deletion error:", err);
+      }
+    }
 
     await Variant.deleteMany({ productId: req.params.id });
     await Product.findByIdAndDelete(req.params.id);
@@ -283,7 +242,7 @@ exports.exportProductsToExcel = async (req, res) => {
     const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
     res.setHeader(
       "Content-Disposition",
-      "attachment; filename=Products_Bulk_Update.xlsx"
+      "attachment; filename=Products_Bulk_Update.xlsx",
     );
     res.send(buffer);
   } catch (err) {
@@ -295,19 +254,29 @@ exports.importProductsFromExcel = async (req, res) => {
   try {
     if (!req.files || req.files.length === 0)
       return res.status(400).json({ error: "No file uploaded" });
+
     let workbook;
-    if (req.files[0].buffer)
+
+    // CLOUDINARY FIX: Read the Excel buffer securely from the Cloudinary URL
+    if (req.files[0].path && req.files[0].path.includes("cloudinary.com")) {
+      const response = await fetch(req.files[0].path);
+      const arrayBuffer = await response.arrayBuffer();
+      workbook = XLSX.read(Buffer.from(arrayBuffer), { type: "buffer" });
+    } else if (req.files[0].buffer) {
       workbook = XLSX.read(req.files[0].buffer, { type: "buffer" });
-    else if (req.files[0].path) workbook = XLSX.readFile(req.files[0].path);
-    else return res.status(400).json({ error: "Invalid file format" });
+    } else if (req.files[0].path) {
+      workbook = XLSX.readFile(req.files[0].path);
+    } else {
+      return res.status(400).json({ error: "Invalid file format" });
+    }
 
     const sheetData = XLSX.utils.sheet_to_json(
       workbook.Sheets[workbook.SheetNames[0]],
-      { defval: 0 }
+      { defval: 0 },
     );
     const updates = sheetData.map(async (row) => {
       const parsedDiscount = Number(
-        row.Discount_Price || row["Discount Price"] || row.discountPrice || 0
+        row.Discount_Price || row["Discount Price"] || row.discountPrice || 0,
       );
       const parsedSGST = Number(row.SGST || row.sgst || 0);
       const parsedCGST = Number(row.CGST || row.cgst || 0);
@@ -329,9 +298,24 @@ exports.importProductsFromExcel = async (req, res) => {
           title: row.Product_Title,
         });
     });
+
     await Promise.all(updates);
-    if (req.files[0].path && fs.existsSync(req.files[0].path))
+
+    // CLOUDINARY FIX: Delete the temporary excel file from Cloudinary after processing
+    if (req.files[0].path && req.files[0].path.includes("cloudinary.com")) {
+      const parts = req.files[0].path.split("/");
+      const filename =
+        parts.pop().split(".")[0] +
+        "." +
+        req.files[0].originalname.split(".").pop();
+      const folder = parts.pop();
+      await cloudinary.uploader.destroy(`${folder}/${filename}`, {
+        resource_type: "raw",
+      });
+    } else if (req.files[0].path && fs.existsSync(req.files[0].path)) {
       fs.unlinkSync(req.files[0].path);
+    }
+
     res.status(200).json({ success: true, message: "Bulk update complete!" });
   } catch (err) {
     res.status(500).json({ error: err.message });

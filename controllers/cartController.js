@@ -1,10 +1,12 @@
 const Cart = require("../models/Cart");
 
 // Get user's cart
+// Get user's cart
 exports.getCart = async (req, res) => {
   try {
     const cart = await Cart.findOne({ user: req.user.id })
-      .populate("items.product", "title thumbnail price")
+      // FIX: Added discountPrice and stock to the populate array
+      .populate("items.product", "title thumbnail price discountPrice stock")
       .populate("items.variant");
 
     if (!cart) {
@@ -25,7 +27,6 @@ exports.addToCart = async (req, res) => {
     let cart = await Cart.findOne({ user: req.user.id });
 
     if (!cart) {
-      // Create new cart if it doesn't exist
       cart = await Cart.create({
         user: req.user.id,
         items: [
@@ -35,18 +36,19 @@ exports.addToCart = async (req, res) => {
       return res.status(201).json({ status: "success", cart });
     }
 
-    // Check if product/variant already exists in cart
-    const itemIndex = cart.items.findIndex(
-      (item) =>
-        item.product.toString() === productId &&
-        (item.variant ? item.variant.toString() === variantId : true),
-    );
+    // FIX: Strictly compare variants. If one has a variant and the other doesn't, they are NOT the same item.
+    const itemIndex = cart.items.findIndex((item) => {
+      const isSameProduct = item.product.toString() === productId;
+      const isSameVariant = item.variant
+        ? item.variant.toString() === variantId
+        : variantId == null || variantId === "";
+
+      return isSameProduct && isSameVariant;
+    });
 
     if (itemIndex > -1) {
-      // If item exists, update the quantity
       cart.items[itemIndex].quantity += qty;
     } else {
-      // If item does not exist, add to array
       cart.items.push({
         product: productId,
         variant: variantId || null,

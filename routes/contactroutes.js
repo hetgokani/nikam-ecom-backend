@@ -4,10 +4,11 @@ const {
   submitContact,
   getMessages,
   deleteMessage,
-} = require("../controllers/contactcontroller");
+} = require("../controllers/contactController");
+const contactController = require("../controllers/contactController");
 
 router.post("/submit", submitContact);
 router.get("/all", getMessages);
 router.delete("/:id", deleteMessage);
-
+router.get("/new-count", contactController.getNewContactCount);
 module.exports = router;

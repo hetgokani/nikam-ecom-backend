@@ -1,10 +1,64 @@
 const Order = require("../models/Order");
 const Cart = require("../models/Cart");
 const Shipping = require("../models/Shipping");
-const Variant = require("../models/Variant"); // REQUIRED to update stock
+const Variant = require("../models/Variant");
 const PDFDocument = require("pdfkit");
 const fs = require("fs");
 const path = require("path");
+const Razorpay = require("razorpay");
+const crypto = require("crypto");
+const RazorpaySetting = require("../models/RazorpaySetting");
+const { decrypt } = require("../utils/encryption");
+
+// 1. INIT RAZORPAY - CORRECTED
+exports.initRazorpayOrder = async (req, res) => {
+  try {
+    const { shippingAddress, totalAmount } = req.body;
+
+    // CHANGED: Searching by city instead of zip code
+    const shippingConfig = await Shipping.findOne({
+      city: { $regex: new RegExp(`^${shippingAddress.city.trim()}$`, "i") },
+      isAvailable: true,
+    });
+
+    if (!shippingConfig)
+      return res
+        .status(400)
+        .json({ message: "Shipping unavailable to this city" });
+
+    // FIX: Ensure 'settings' is fetched to get the keyId
+    const settings = await RazorpaySetting.findOne();
+    if (!settings)
+      return res.status(400).json({ message: "Razorpay not configured" });
+
+    const secret = decrypt({
+      iv: settings.iv,
+      encryptedData: settings.keySecret,
+    });
+
+    const razorpay = new Razorpay({
+      key_id: settings.keyId,
+      key_secret: secret,
+    });
+
+    const order = await razorpay.orders.create({
+      amount: Math.round(totalAmount * 100),
+      currency: "INR",
+      receipt: `RCPT_${Date.now()}`,
+    });
+
+    // Send the keyId here so the frontend can use it
+    res.status(200).json({
+      success: true,
+      razorpayOrder: order,
+      keyId: settings.keyId,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// 2. CREATE ORDER (The "Source of Truth" for Prices)
 exports.createOrder = async (req, res) => {
   try {
     const {
@@ -14,93 +68,81 @@ exports.createOrder = async (req, res) => {
       subtotal,
       discountAmount,
       couponCodeApplied,
+      razorpay_payment_id,
+      razorpay_order_id,
+      razorpay_signature,
     } = req.body;
 
-    if (!orderItems || orderItems.length === 0) {
-      return res.status(400).json({ message: "No order items provided" });
-    }
+    // Verify Payment
+    const settings = await RazorpaySetting.findOne();
+    const secret = decrypt({
+      iv: settings.iv,
+      encryptedData: settings.keySecret,
+    });
+    const expected = crypto
+      .createHmac("sha256", secret)
+      .update(razorpay_order_id + "|" + razorpay_payment_id)
+      .digest("hex");
+    if (expected !== razorpay_signature)
+      return res.status(400).json({ message: "Verification failed" });
 
-    // =========================================================
-    // 1. NEW: VALIDATE STOCK BEFORE PLACING ORDER
-    // =========================================================
-    for (const item of orderItems) {
-      const variantData = await Variant.findById(item.variant);
-      if (!variantData) {
-        return res
-          .status(404)
-          .json({ message: `Variant not found for ${item.title}` });
-      }
-      if (variantData.stock < item.quantity) {
-        return res.status(400).json({
-          message: `Insufficient stock for ${item.title}. Only ${variantData.stock} left.`,
-        });
-      }
-    }
+    // Final Pricing Logic: Uses DISCOUNT PRICE
+    const verifiedOrderItems = orderItems.map((item) => ({
+      product: item.product,
+      variant: item.variant,
+      title: item.title,
+      quantity: item.quantity,
+      price: Number(item.price), // USE THE PRICE SENT FROM FRONTEND
+      image: item.image,
+    }));
 
-    // ----- VALIDATE SHIPPING & GET DYNAMIC PRICE -----
+    // Now the subtotal will be correct
+    const finalSubtotal = verifiedOrderItems.reduce(
+      (acc, item) => acc + item.price * item.quantity,
+      0,
+    );
+
+    // FIX: Search by City (case-insensitive) just like the frontend!
     const shippingConfig = await Shipping.findOne({
-      pincode: shippingAddress.zip,
-      isAvailable: true,
+      city: { $regex: new RegExp(`^${shippingAddress.city.trim()}$`, "i") },
     });
 
-    if (!shippingConfig) {
-      return res.status(400).json({
-        message: `Shipping is currently not available for PIN Code: ${shippingAddress.zip}`,
-      });
-    }
+    // Fallback to 0 if something goes wrong, instead of crashing
+    const actualShippingPrice = shippingConfig
+      ? shippingConfig.shippingPrice
+      : 0;
 
-    const calculatedShippingPrice = shippingConfig.shippingPrice;
-    const finalTotalPrice = subtotal + calculatedShippingPrice - discountAmount;
-    // ------------------------------------------------------
-
-    const currentYear = new Date().getFullYear();
-    const orderCount = await Order.countDocuments();
-    const orderNumber = `#SW-${currentYear}-${String(orderCount + 1).padStart(
-      3,
-      "0"
-    )}`;
-    const transactionId = `COD-TXN-${Date.now()}`;
+    const totalPrice = finalSubtotal + actualShippingPrice - discountAmount;
 
     const order = new Order({
       user: req.user.id,
-      orderNumber,
-      orderItems,
+      orderNumber: `#NO-${new Date().getFullYear()}-${String(
+        (await Order.countDocuments()) + 1,
+      ).padStart(3, "0")}`,
+      orderItems: verifiedOrderItems,
       shippingAddress,
       billingAddress,
       paymentInfo: {
-        method: "COD",
-        transactionId: transactionId,
-        status: "Pending",
+        method: "Razorpay",
+        transactionId: razorpay_payment_id,
+        status: "Completed",
       },
-      subtotal,
-      shippingPrice: calculatedShippingPrice,
+      subtotal: finalSubtotal,
+      shippingPrice: actualShippingPrice,
       discountAmount,
-      totalPrice: finalTotalPrice,
+      totalPrice,
       couponCodeApplied,
     });
 
-    const createdOrder = await order.save();
-
-    // =========================================================
-    // 2. NEW: MINUS THE STOCK AS PER THE ORDER QUANTITY
-    // =========================================================
-    const stockUpdates = orderItems.map((item) => {
-      return Variant.findByIdAndUpdate(item.variant, {
-        $inc: { stock: -item.quantity },
-      });
-    });
-
-    await Promise.all(stockUpdates);
-    // =========================================================
-
-    // Clear the cart
+    await order.save();
+    await Promise.all(
+      orderItems.map((i) =>
+        Variant.findByIdAndUpdate(i.variant, { $inc: { stock: -i.quantity } }),
+      ),
+    );
     await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-    res.status(201).json({
-      success: true,
-      order: createdOrder,
-      message: "Order placed successfully",
-    });
+    res.status(201).json({ success: true, order });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -155,22 +197,21 @@ exports.updateOrderStatus = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
 // =====================================================================
-// NEW: ULTRA-PROFESSIONAL INVOICE GENERATOR
+// ULTRA-PROFESSIONAL INVOICE GENERATOR
 // =====================================================================
 exports.downloadInvoice = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id).populate(
       "user",
-      "name email"
+      "name email",
     );
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    // FIX: Changed 'margin: 40' to explicit margins with 'bottom: 15'.
-    // This perfectly solves the blank 2nd page issue!
     const doc = new PDFDocument({
       margins: { top: 40, bottom: 15, left: 40, right: 40 },
       size: "A4",
@@ -181,22 +222,21 @@ exports.downloadInvoice = async (req, res) => {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=${invoiceNumber}.pdf`
+      `attachment; filename=${invoiceNumber}.pdf`,
     );
     doc.pipe(res);
 
     // --- 1. HEADER & LOGO ---
-    const logoPath = path.join(__dirname, "../swlogo.png");
+    const logoPath = path.join(__dirname, "../logo.png");
 
-    // Check if the PNG logo exists. (MUST BE PNG, NOT WEBP!)
     if (fs.existsSync(logoPath)) {
       doc.image(logoPath, 40, 30, { width: 150 });
     } else {
       doc
         .fontSize(22)
         .font("Helvetica-Bold")
-        .fillColor("#de433f")
-        .text("SneakersWala", 40, 30);
+        .fillColor("#407e18")
+        .text("Nikam Organic", 40, 30);
     }
 
     // Title
@@ -204,7 +244,7 @@ exports.downloadInvoice = async (req, res) => {
       .fillColor("#000000")
       .fontSize(18)
       .font("Helvetica-Bold")
-      .text("TAX INVOICE", 200, 35, { align: "right" })
+      .text("INVOICE", 200, 35, { align: "right" })
       .fontSize(9)
       .font("Helvetica")
       .fillColor("#64748b")
@@ -216,7 +256,6 @@ exports.downloadInvoice = async (req, res) => {
     let currentY = 105;
 
     // --- 2. SELLER & ORDER INFO ---
-    // Seller Box
     doc
       .fillColor("#000000")
       .font("Helvetica-Bold")
@@ -226,11 +265,11 @@ exports.downloadInvoice = async (req, res) => {
       .font("Helvetica")
       .fontSize(9)
       .fillColor("#333333")
-      .text("SneakersWala Official Store", 40, currentY + 15)
-      .text("150 Feet Ring Road, Rajkot", 40, currentY + 30)
-      .text("Gujarat, 360005, India", 40, currentY + 45)
-      .font("Helvetica-Bold")
-      .text("GSTIN: 24AAAAA0000A1Z5", 40, currentY + 65);
+      .text("Nikam Organic", 40, currentY + 15)
+      .text("02-b unnati nagar pole", 40, currentY + 30)
+      .text("no.17 deopur dhule, dhule deopur,", 40, currentY + 45)
+      .text("Dhule - 424002, Maharashtra", 40, currentY + 60)
+      .font("Helvetica-Bold");
 
     // Order Box
     doc
@@ -249,7 +288,7 @@ exports.downloadInvoice = async (req, res) => {
       .text(
         new Date(order.createdAt).toLocaleDateString("en-IN"),
         410,
-        currentY + 15
+        currentY + 15,
       )
       .font("Helvetica-Bold")
       .fillColor("#000000")
@@ -273,18 +312,18 @@ exports.downloadInvoice = async (req, res) => {
     currentY += 15;
 
     // --- 3. DYNAMIC ADDRESS BOXES ---
-    // Safely building the strings
+    // Safely building the strings (Removed .zip references if they existed in text blocks)
     let billAddr = `${order.billingAddress.firstName} ${order.billingAddress.lastName}\n${order.billingAddress.address1}\n`;
     if (order.billingAddress.address2)
       billAddr += `${order.billingAddress.address2}\n`;
-    billAddr += `${order.billingAddress.city}, ${order.billingAddress.zip}\n${order.billingAddress.country}\nPh: ${order.billingAddress.phone}`;
+    billAddr += `${order.billingAddress.city}\n${order.billingAddress.country}\nPh: ${order.billingAddress.phone}`;
 
     let shipAddr = `${order.shippingAddress.firstName} ${order.shippingAddress.lastName}\n${order.shippingAddress.address1}\n`;
     if (order.shippingAddress.address2)
       shipAddr += `${order.shippingAddress.address2}\n`;
-    shipAddr += `${order.shippingAddress.city}, ${order.shippingAddress.zip}\n${order.shippingAddress.country}\nPh: ${order.shippingAddress.phone}`;
+    shipAddr += `${order.shippingAddress.city}\n${order.shippingAddress.country}\nPh: ${order.shippingAddress.phone}`;
 
-    // Left Side: Billing (Width restricted to 230 so it wraps down, never across)
+    // Left Side: Billing
     doc
       .font("Helvetica-Bold")
       .fontSize(10)
@@ -300,7 +339,7 @@ exports.downloadInvoice = async (req, res) => {
         lineGap: 2,
       });
 
-    // Right Side: Shipping (Width restricted to 230 so it wraps down)
+    // Right Side: Shipping
     doc
       .font("Helvetica-Bold")
       .fontSize(10)
@@ -316,7 +355,6 @@ exports.downloadInvoice = async (req, res) => {
         lineGap: 2,
       });
 
-    // Automatically calculate where the next section should start based on address length!
     currentY = Math.max(doc.y, currentY + 80) + 25;
 
     // --- 4. ITEMS TABLE ENGINE ---
@@ -338,7 +376,6 @@ exports.downloadInvoice = async (req, res) => {
     currentY = drawTableHeader(currentY);
 
     order.orderItems.forEach((item, index) => {
-      // NEW PAGE TRIGGER: If we reach the bottom, create a new page! No blank pages!
       if (currentY > 700) {
         doc.addPage();
         currentY = 40;
@@ -390,52 +427,35 @@ exports.downloadInvoice = async (req, res) => {
     }
 
     // --- 5. THE GST MATH & PROFESSIONAL TOTALS BOX ---
-    // We reverse calculate standard 18% GST from the Subtotal
+    // --- 5. THE PROFESSIONAL TOTALS BOX (NO GST) ---
     const subtotalNumber = Number(order.subtotal);
-    const taxableValue = subtotalNumber / 1.18;
-    const cgst = taxableValue * 0.09;
-    const sgst = taxableValue * 0.09;
 
-    doc.rect(320, currentY, 235, 125).strokeColor("#e2e8f0").stroke();
+    // Box height set to 85 to fit the 3 lines neatly
+    doc.rect(320, currentY, 235, 85).strokeColor("#e2e8f0").stroke();
 
     doc
       .font("Helvetica")
       .fontSize(9)
       .fillColor("#64748b")
-      .text("Taxable Value:", 330, currentY + 12, { width: 100 })
+      // 1. Total Amount (Label & Price)
+      .text("Total Amount:", 330, currentY + 12, { width: 100 })
       .fillColor("#000000")
-      .text(`Rs. ${taxableValue.toFixed(2)}`, 440, currentY + 12, {
+      .text(`Rs. ${subtotalNumber.toFixed(2)}`, 440, currentY + 12, {
         width: 105,
         align: "right",
       })
-
+      // 2. Shipping Charges (Label & Price)
       .fillColor("#64748b")
-      .text("CGST (9%):", 330, currentY + 27, { width: 100 })
-      .fillColor("#000000")
-      .text(`Rs. ${cgst.toFixed(2)}`, 440, currentY + 27, {
-        width: 105,
-        align: "right",
-      })
-
-      .fillColor("#64748b")
-      .text("SGST (9%):", 330, currentY + 42, { width: 100 })
-      .fillColor("#000000")
-      .text(`Rs. ${sgst.toFixed(2)}`, 440, currentY + 42, {
-        width: 105,
-        align: "right",
-      })
-
-      .fillColor("#64748b")
-      .text("Shipping Charges:", 330, currentY + 57, { width: 100 })
+      .text("Shipping Charges:", 330, currentY + 27, { width: 100 })
       .fillColor("#000000")
       .text(
         `Rs. ${Number(order.shippingPrice).toFixed(2)}`,
         440,
-        currentY + 57,
-        { width: 105, align: "right" }
+        currentY + 27, // FIXED: Matches label's Y-position perfectly
+        { width: 105, align: "right" },
       );
 
-    let nextY = currentY + 72;
+    let nextY = currentY + 42;
 
     if (order.discountAmount > 0) {
       doc
@@ -448,23 +468,24 @@ exports.downloadInvoice = async (req, res) => {
       nextY += 15;
     }
 
+    // Divider Line
     doc
       .moveTo(320, nextY + 5)
       .lineTo(555, nextY + 5)
       .strokeColor("#e2e8f0")
       .stroke();
 
+    // 3. Grand Total
     doc
       .font("Helvetica-Bold")
       .fontSize(13)
       .fillColor("#000000")
       .text("Grand Total:", 330, nextY + 15, { width: 100 })
-      .fillColor("#de433f")
+      .fillColor("#407e18")
       .text(`Rs. ${Number(order.totalPrice).toFixed(2)}`, 420, nextY + 15, {
         width: 125,
         align: "right",
       });
-
     // --- Payment Details ---
     doc
       .font("Helvetica-Bold")
@@ -481,29 +502,25 @@ exports.downloadInvoice = async (req, res) => {
       doc.text(
         `Transaction ID: ${order.paymentInfo.transactionId}`,
         40,
-        currentY + 40
+        currentY + 40,
       );
     }
 
     // --- Authorised Signatory ---
     const authY = Math.max(nextY + 60, currentY + 160);
-    if (authY > 750) doc.addPage(); // Failsafe
+    if (authY > 750) doc.addPage();
 
     doc
       .font("Helvetica-Bold")
       .fontSize(10)
       .fillColor("#000000")
-      .text("For SneakersWala:", 350, authY, { align: "right", width: 200 });
-    doc
-      .moveTo(400, authY + 40)
-      .lineTo(550, authY + 40)
-      .strokeColor("#000000")
-      .stroke();
+      .text("From Nikam Organic", 350, authY, { align: "right", width: 200 });
+
     doc
       .font("Helvetica")
       .fontSize(9)
       .fillColor("#64748b")
-      .text("Authorized Signatory", 350, authY + 45, {
+      .text("Thank You", 350, authY + 45, {
         align: "right",
         width: 200,
       });
@@ -518,15 +535,24 @@ exports.downloadInvoice = async (req, res) => {
         .fontSize(8)
         .fillColor("#94a3b8")
         .text(
-          "This is a computer-generated tax invoice and does not require a physical signature.",
+          "This is a computer-generated invoice and does not require a physical signature.",
           40,
           805,
-          { align: "center", width: 515 }
+          { align: "center", width: 515 },
         );
     }
 
     doc.end();
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+exports.getNewOrderCount = async (req, res) => {
+  try {
+    // Queries your Order model for all 'Pending' orders
+    const count = await Order.countDocuments({ orderStatus: "Pending" });
+    res.status(200).json({ count });
+  } catch (error) {
+    res.status(500).json({ message: "Error counting orders" });
   }
 };
