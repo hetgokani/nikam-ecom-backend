@@ -13,7 +13,10 @@ const sendEmail = async (to, subject, html) => {
     });
 
     const transporter = nodemailer.createTransport({
-      service: "gmail", // Uses Gmail API
+      host: "smtp.gmail.com",
+      port: 587,
+      secure: false,
+      family: 4, // FORCE IPV4
       auth: {
         user: settings.email,
         pass: decryptedPassword,
