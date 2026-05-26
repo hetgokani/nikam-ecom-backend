@@ -17,27 +17,42 @@ const sendEmail = async (to, subject, html) => {
       encryptedData: settings.appPassword,
     });
 
-    console.log("EMAIL:", settings.email);
-    console.log("APP PASSWORD:", decryptedPassword);
+    // REMOVE SPACES FROM APP PASSWORD
+    const cleanPassword = decryptedPassword.replace(/\s+/g, "");
 
-    // SMTP TRANSPORTER
+    console.log("EMAIL:", settings.email);
+    console.log("APP PASSWORD:", cleanPassword);
+
+    // CREATE TRANSPORTER
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
-      port: 587,
-      secure: false,
-      family: 4, // FORCE IPV4
+      port: 465,
+      secure: true,
+
       auth: {
         user: settings.email,
-        pass: decryptedPassword,
+        pass: cleanPassword,
       },
+
+      tls: {
+        rejectUnauthorized: false,
+        family: 4,
+      },
+
+      connectionTimeout: 20000,
+      greetingTimeout: 20000,
+      socketTimeout: 20000,
+
+      debug: true,
+      logger: true,
     });
 
-    // VERIFY SMTP CONNECTION
+    // VERIFY CONNECTION
     await transporter.verify();
 
     console.log("SMTP VERIFIED SUCCESSFULLY");
 
-    // SEND EMAIL
+    // MAIL OPTIONS
     const mailOptions = {
       from: `"${settings.senderName}" <${settings.email}>`,
       to,
@@ -45,9 +60,11 @@ const sendEmail = async (to, subject, html) => {
       html,
     };
 
+    // SEND EMAIL
     const info = await transporter.sendMail(mailOptions);
 
-    console.log("EMAIL SENT:", info.response);
+    console.log("EMAIL SENT SUCCESSFULLY");
+    console.log(info.response);
 
     return true;
   } catch (error) {
