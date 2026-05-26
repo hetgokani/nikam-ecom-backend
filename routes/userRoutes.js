@@ -13,7 +13,7 @@ const {
 const router = express.Router();
 
 // The middleware here checks for a cookie BEFORE the register function runs
-router.post("/register", authMiddleware, register);
+router.post("/register", register);
 router.post("/send-otp", sendRegistrationOtp);
 router.post("/login", login);
 router.post("/logout", logout);

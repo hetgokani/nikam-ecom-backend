@@ -4,14 +4,23 @@ const { decrypt } = require("./encryption");
 
 const sendEmail = async (to, subject, html) => {
   try {
+    // GET SMTP SETTINGS
     const settings = await EmailSetting.findOne();
-    if (!settings) throw new Error("SMTP Settings not configured by Admin.");
 
+    if (!settings) {
+      throw new Error("SMTP Settings not configured by Admin.");
+    }
+
+    // DECRYPT PASSWORD
     const decryptedPassword = decrypt({
       iv: settings.iv,
       encryptedData: settings.appPassword,
     });
 
+    console.log("EMAIL:", settings.email);
+    console.log("APP PASSWORD:", decryptedPassword);
+
+    // SMTP TRANSPORTER
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 587,
@@ -23,6 +32,12 @@ const sendEmail = async (to, subject, html) => {
       },
     });
 
+    // VERIFY SMTP CONNECTION
+    await transporter.verify();
+
+    console.log("SMTP VERIFIED SUCCESSFULLY");
+
+    // SEND EMAIL
     const mailOptions = {
       from: `"${settings.senderName}" <${settings.email}>`,
       to,
@@ -30,10 +45,14 @@ const sendEmail = async (to, subject, html) => {
       html,
     };
 
-    await transporter.sendMail(mailOptions);
+    const info = await transporter.sendMail(mailOptions);
+
+    console.log("EMAIL SENT:", info.response);
+
     return true;
   } catch (error) {
-    console.error("Email Error:", error.message);
+    console.error("FULL EMAIL ERROR:", error);
+
     throw new Error(error.message);
   }
 };
